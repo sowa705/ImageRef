@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ImageRef - Image Measurement Tool</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Left Sidebar: Sessions -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h2>Sessions</h2>
+      </div>
+      <div id="session-list" class="session-list"></div>
+      <div class="sidebar-footer">
+        <p class="hint">Paste an image (Ctrl+V) to start</p>
+      </div>
+    </aside>
+
+    <!-- Main Area -->
+    <main id="main">
+      <!-- Toolbar -->
+      <div id="toolbar">
+        <div class="tool-group">
+          <button id="tool-pan" class="tool-btn active" title="Pan (Space+Drag)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2L12 22M2 12L22 12M5 5L19 19M19 5L5 19" opacity="0.3"/>
+              <path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3"/>
+            </svg>
+            <span>Pan</span>
+          </button>
+          <button id="tool-reference" class="tool-btn" title="Draw Reference Line (R)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" y1="21" x2="21" y2="3"/>
+              <line x1="3" y1="21" x2="3" y2="15"/>
+              <line x1="3" y1="21" x2="9" y2="21"/>
+              <line x1="21" y1="3" x2="21" y2="9"/>
+              <line x1="21" y1="3" x2="15" y2="3"/>
+            </svg>
+            <span>Reference</span>
+          </button>
+          <button id="tool-persp-ref" class="tool-btn" title="Perspective Reference - click 4 corners clockwise (P)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M5 18L2 4h20l-3 14H5z"/>
+              <circle cx="2" cy="4" r="1.5" fill="currentColor"/>
+              <circle cx="22" cy="4" r="1.5" fill="currentColor"/>
+              <circle cx="19" cy="18" r="1.5" fill="currentColor"/>
+              <circle cx="5" cy="18" r="1.5" fill="currentColor"/>
+            </svg>
+            <span>Persp Ref</span>
+          </button>
+          <button id="tool-line" class="tool-btn" title="Measure Line">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" y1="21" x2="21" y2="3"/>
+              <circle cx="3" cy="21" r="2"/>
+              <circle cx="21" cy="3" r="2"/>
+            </svg>
+            <span>Line</span>
+          </button>
+          <button id="tool-rect" class="tool-btn" title="Measure Rectangle">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="5" width="18" height="14" rx="1"/>
+            </svg>
+            <span>Rect</span>
+          </button>
+          <button id="tool-circle" class="tool-btn" title="Measure Circle">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9"/>
+              <line x1="12" y1="12" x2="21" y2="12" stroke-dasharray="2 2"/>
+            </svg>
+            <span>Circle</span>
+          </button>
+        </div>
+        <div class="tool-group separator">
+          <button id="btn-zoom-in" class="tool-btn" title="Zoom In">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/>
+              <line x1="8" y1="11" x2="14" y2="11"/><line x1="11" y1="8" x2="11" y2="14"/>
+            </svg>
+          </button>
+          <button id="btn-zoom-out" class="tool-btn" title="Zoom Out">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/>
+              <line x1="8" y1="11" x2="14" y2="11"/>
+            </svg>
+          </button>
+          <button id="btn-zoom-fit" class="tool-btn" title="Fit to View">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 8V5a2 2 0 012-2h3M16 3h3a2 2 0 012 2v3M21 16v3a2 2 0 01-2 2h-3M8 21H5a2 2 0 01-2-2v-3"/>
+            </svg>
+          </button>
+          <span id="zoom-level" class="zoom-label">100%</span>
+        </div>
+        <div class="tool-group separator">
+          <button id="btn-delete" class="tool-btn" title="Delete Selected (Del)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+              <path d="M10 11v6M14 11v6M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
+            </svg>
+          </button>
+          <button id="btn-undo" class="tool-btn" title="Undo (Ctrl+Z)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 10h10a5 5 0 015 5v0a5 5 0 01-5 5H10M3 10l4-4M3 10l4 4"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Canvas Container -->
+      <div id="canvas-container">
+        <canvas id="main-canvas"></canvas>
+        <div id="empty-state">
+          <div class="empty-icon">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+            </svg>
+          </div>
+          <h3>Paste an image to get started</h3>
+          <p>Press <kbd>Ctrl</kbd>+<kbd>V</kbd> or drag &amp; drop an image</p>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right Panel: Layers & Properties -->
+    <aside id="right-panel">
+      <div class="panel-section">
+        <div class="panel-header">
+          <h3>Layers</h3>
+          <button id="btn-add-layer" class="icon-btn" title="Add Layer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+            </svg>
+          </button>
+        </div>
+        <div id="layer-list" class="layer-list"></div>
+      </div>
+      <div class="panel-section">
+        <div class="panel-header">
+          <h3>Measurements</h3>
+        </div>
+        <div id="measurement-list" class="measurement-list"></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Reference Line Dialog -->
+  <div id="ref-dialog" class="dialog-overlay hidden">
+    <div class="dialog">
+      <h3 id="ref-dialog-title">Set Reference Size</h3>
+      <p>Enter the real-world size of the reference line:</p>
+      <div class="dialog-input-row">
+        <input type="number" id="ref-value" step="any" min="0" placeholder="Size" autofocus>
+        <select id="ref-unit">
+          <option value="mm">mm</option>
+          <option value="cm">cm</option>
+          <option value="m">m</option>
+          <option value="inch">inch</option>
+          <option value="mil">mil</option>
+        </select>
+      </div>
+      <div class="dialog-actions">
+        <button id="ref-cancel" class="btn-secondary">Cancel</button>
+        <button id="ref-ok" class="btn-primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Perspective Reference Dialog -->
+  <div id="persp-dialog" class="dialog-overlay hidden">
+    <div class="dialog">
+      <h3 id="persp-dialog-title">Perspective Reference Dimensions</h3>
+      <p>Enter the real-world width and height of the marked rectangle:</p>
+      <div class="dialog-input-row">
+        <input type="number" id="persp-width" step="any" min="0" placeholder="Width">
+        <input type="number" id="persp-height" step="any" min="0" placeholder="Height">
+        <select id="persp-unit">
+          <option value="mm">mm</option>
+          <option value="cm">cm</option>
+          <option value="m">m</option>
+          <option value="inch">inch</option>
+          <option value="mil">mil</option>
+        </select>
+      </div>
+      <div class="dialog-actions">
+        <button id="persp-cancel" class="btn-secondary">Cancel</button>
+        <button id="persp-ok" class="btn-primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
