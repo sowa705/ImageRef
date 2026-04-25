@@ -2,7 +2,7 @@
 
 Measure things off images using a reference measurement
 
-Link: [imageref.sowa705.github.io](imageref.sowa705.github.io)
+Link: [sowa705.github.io/ImageRef](https://sowa705.github.io/ImageRef/)
 
 ## Features
 
