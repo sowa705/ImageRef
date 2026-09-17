@@ -8,6 +8,8 @@ Link: [sowa705.github.io/ImageRef](https://sowa705.github.io/ImageRef/)
 
 - Perspective adjustment from a rectangle measurement
 - Multiple units: mm, mil, cm, m, inch
+- Area display for rectangles, circles and polygons (auto-scaled mm²–km²)
+- Arbitrary polygon tool with per-side lengths and area
 - Touchpad navigation
 - Local storage for past sessions
 
