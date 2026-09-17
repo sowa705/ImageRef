@@ -41,6 +41,51 @@
     return `${formatValue(value)} ${unit}`;
   }
 
+  // ---- Area Units ----------------------------------------
+  // areaUnit: null|'auto' picks the most convenient metric unit (mm²..km²)
+  const AREA_TO_MM2 = { 'mm²': 1, 'cm²': 100, 'm²': 1e6, 'km²': 1e12 };
+
+  function autoAreaUnit(areaInUnit, unit) {
+    // Pick the most convenient metric area unit for an area given in `unit`²
+    if (unit === 'inch') return 'in²';
+    if (unit === 'mil') return 'mil²';
+    const mm2 = areaInUnit * UNIT_TO_MM[unit] * UNIT_TO_MM[unit];
+    if (mm2 >= 1e12) return 'km²';
+    if (mm2 >= 1e6) return 'm²';
+    if (mm2 >= 100) return 'cm²';
+    return 'mm²';
+  }
+
+  function areaUnitName(u) {
+    // Normalize linear ('mm','inch') and squared ('mm²','in²') names to squared names
+    if (AREA_TO_MM2[u] || u === 'in²' || u === 'mil²') return u;
+    if (u === 'inch' || u === 'in') return 'in²';
+    if (u === 'mil') return 'mil²';
+    return u + '²';
+  }
+
+  function convertAreaUnits(value, fromUnit, toUnit) {
+    fromUnit = areaUnitName(fromUnit);
+    toUnit = areaUnitName(toUnit);
+    if (fromUnit === toUnit) return value;
+    const fromMm2 = AREA_TO_MM2[fromUnit] || (UNIT_TO_MM[fromUnit === 'in²' ? 'inch' : 'mil'] ** 2);
+    const toMm2 = AREA_TO_MM2[toUnit] || (UNIT_TO_MM[toUnit === 'in²' ? 'inch' : 'mil'] ** 2);
+    return value * fromMm2 / toMm2;
+  }
+
+  function formatArea(value, areaUnit) {
+    return `${formatValue(value)} ${areaUnit}`;
+  }
+
+  function polygonArea(points) {
+    let a = 0;
+    for (let i = 0; i < points.length; i++) {
+      const p1 = points[i], p2 = points[(i + 1) % points.length];
+      a += p1.x * p2.y - p2.x * p1.y;
+    }
+    return Math.abs(a) / 2;
+  }
+
   // ---- Data Model ----------------------------------------
   /*
     state = {
@@ -56,7 +101,8 @@
     }
     RefLine = { id, type:'reference', x1,y1,x2,y2, refValue, refUnit }
     PerspRef = { id, type:'persp-ref', points:[{x,y}*4], width, height, refUnit, homography:[8] }
-    Measurement = { id, type:'line'|'rect'|'circle', x1,y1,x2,y2, displayUnit:null|string }
+    Measurement = { id, type:'line'|'rect'|'circle', x1,y1,x2,y2, displayUnit:null|string, areaUnit:null|'auto'|string }
+      | { id, type:'polygon', points:[{x,y}...], displayUnit:null|string, areaUnit:null|'auto'|string }
   */
 
   const STORAGE_KEY = 'imageref_sessions';
@@ -69,6 +115,8 @@
   let undoStack = [];
   let dragging = null;         // {meas, endpointIndex, pointerId}
   let perspDrawPoints = [];    // world coords for persp-ref tool, up to 4
+  let polyDrawPoints = [];     // world coords for polygon tool in progress
+  let polyCursorWorld = null;  // cursor world position for polygon preview
 
   // ---- Canvas / View State -------------------------------
   const canvas = $('#main-canvas');
@@ -181,6 +229,8 @@
     drawing = null;
     dragging = null;
     perspDrawPoints = [];
+    polyDrawPoints = [];
+    polyCursorWorld = null;
     const s = activeSession();
     if (!s) {
       img = null;
@@ -382,8 +432,9 @@
       const result = computeMeasurementValues(m, layer);
       if (result) {
         if (m.type === 'line') dimStr = formatValue(result.values[0]);
-        else if (m.type === 'rect') dimStr = `${formatValue(result.values[0])} \u00d7 ${formatValue(result.values[1])}`;
-        else if (m.type === 'circle') dimStr = `\u2300 ${formatValue(result.values[0])}`;
+        else if (m.type === 'rect') dimStr = `${formatValue(result.values[0])} \u00d7 ${formatValue(result.values[1])}; ${formatArea(result.area, result.areaUnit)}`;
+        else if (m.type === 'circle') dimStr = `\u2300 ${formatValue(result.values[0])}; ${formatArea(result.area, result.areaUnit)}`;
+        else if (m.type === 'polygon') dimStr = formatArea(result.area, result.areaUnit);
         currentUnit = result.unit;
       } else {
         dimStr = '\u2014';
@@ -436,6 +487,31 @@
     // Insert select before delete button
     const deleteBtn = el.querySelector('.measurement-delete');
     el.insertBefore(select, deleteBtn);
+
+    // Area unit selector for area-bearing shapes (rect, circle, polygon)
+    if (!isRef && !isPersp && (m.type === 'rect' || m.type === 'circle' || m.type === 'polygon')) {
+      const areaSelect = document.createElement('select');
+      areaSelect.className = 'measurement-unit-select area-select';
+      areaSelect.title = 'Area unit (auto = most convenient)';
+      const areaOptions = ['auto', 'mm²', 'cm²', 'm²', 'km²', 'in²', 'mil²'];
+      const currentAreaUnit = m.areaUnit || 'auto';
+      for (const u of areaOptions) {
+        const opt = document.createElement('option');
+        opt.value = u;
+        opt.textContent = u;
+        if (u === currentAreaUnit) opt.selected = true;
+        areaSelect.appendChild(opt);
+      }
+      areaSelect.addEventListener('click', (e) => e.stopPropagation());
+      areaSelect.addEventListener('change', (e) => {
+        e.stopPropagation();
+        m.areaUnit = areaSelect.value;
+        saveState();
+        renderMeasurementList();
+        renderAll();
+      });
+      el.insertBefore(areaSelect, deleteBtn);
+    }
 
     el.addEventListener('click', () => {
       selectedMeasId = m.id;
@@ -501,7 +577,7 @@
   function hitTestEndpoints(sx, sy, m) {
     // Returns endpoint index or -1. Works in screen coords.
     const threshold = 12;
-    if (m.type === 'persp-ref') {
+    if (m.type === 'persp-ref' || m.type === 'polygon') {
       for (let i = 0; i < m.points.length; i++) {
         const sp = worldToScreen(m.points[i].x, m.points[i].y);
         if (dist(sx, sy, sp.x, sp.y) < threshold) return i;
@@ -575,6 +651,16 @@
       }
       return minD;
     }
+    if (m.type === 'polygon') {
+      let minD = Infinity;
+      const n = m.points.length;
+      for (let i = 0; i < n; i++) {
+        const p1 = worldToScreen(m.points[i].x, m.points[i].y);
+        const p2 = worldToScreen(m.points[(i + 1) % n].x, m.points[(i + 1) % n].y);
+        minD = Math.min(minD, pointToSegDist(sx, sy, p1.x, p1.y, p2.x, p2.y));
+      }
+      return minD;
+    }
     return Infinity;
   }
 
@@ -606,10 +692,16 @@
   }
 
   function computeMeasurementValues(m, layer) {
-    // Returns { values: [number...], unit: string } or null
+    // Returns { values: [number...], unit: string, area?, areaUnit?, sides? } or null
     const hasPerspective = layer.perspRef && layer.perspRef.homography;
     const refUnit = getRefUnit(layer);
     if (!refUnit) return null;
+
+    // Resolve area unit: explicit choice, or auto (most convenient) by default
+    const resolveArea = (areaInBaseUnit, baseUnit) => {
+      const au = (m.areaUnit && m.areaUnit !== 'auto') ? m.areaUnit : autoAreaUnit(areaInBaseUnit, baseUnit);
+      return { area: convertAreaUnits(areaInBaseUnit, baseUnit, au), areaUnit: au };
+    };
 
     if (m.type === 'line') {
       let value;
@@ -648,9 +740,11 @@
         baseUnit = layer.reference.refUnit;
       }
       const dispUnit = m.displayUnit || baseUnit;
+      const res = resolveArea(w * h, baseUnit);
       return {
         values: [convertUnits(w, baseUnit, dispUnit), convertUnits(h, baseUnit, dispUnit)],
         unit: dispUnit,
+        area: res.area, areaUnit: res.areaUnit,
       };
     }
 
@@ -669,7 +763,31 @@
         baseUnit = layer.reference.refUnit;
       }
       const dispUnit = m.displayUnit || baseUnit;
-      return { values: [convertUnits(diameter, baseUnit, dispUnit)], unit: dispUnit };
+      const r = diameter / 2;
+      const res = resolveArea(Math.PI * r * r, baseUnit);
+      return { values: [convertUnits(diameter, baseUnit, dispUnit)], unit: dispUnit, area: res.area, areaUnit: res.areaUnit };
+    }
+
+    if (m.type === 'polygon') {
+      let worldPts, baseUnit;
+      if (hasPerspective) {
+        const H = layer.perspRef.homography;
+        worldPts = m.points.map(p => applyHomography(H, p.x, p.y));
+        baseUnit = layer.perspRef.refUnit;
+      } else {
+        const ppUnit = getPixelsPerUnit(layer);
+        if (!ppUnit) return null;
+        worldPts = m.points.map(p => ({ x: p.x / ppUnit, y: p.y / ppUnit }));
+        baseUnit = layer.reference.refUnit;
+      }
+      const dispUnit = m.displayUnit || baseUnit;
+      const sides = [];
+      for (let i = 0; i < worldPts.length; i++) {
+        const p1 = worldPts[i], p2 = worldPts[(i + 1) % worldPts.length];
+        sides.push(convertUnits(dist(p1.x, p1.y, p2.x, p2.y), baseUnit, dispUnit));
+      }
+      const res = resolveArea(polygonArea(worldPts), baseUnit);
+      return { values: [], unit: dispUnit, sides, area: res.area, areaUnit: res.areaUnit };
     }
 
     return null;
@@ -681,8 +799,9 @@
     const result = computeMeasurementValues(m, layer);
     if (!result) return '\u2014 (no ref)';
     if (m.type === 'line') return formatDim(result.values[0], result.unit);
-    if (m.type === 'rect') return `${formatDim(result.values[0], result.unit)} \u00d7 ${formatDim(result.values[1], result.unit)}`;
-    if (m.type === 'circle') return `\u2300 ${formatDim(result.values[0], result.unit)}`;
+    if (m.type === 'rect') return `${formatDim(result.values[0], result.unit)} \u00d7 ${formatDim(result.values[1], result.unit)} (${formatArea(result.area, result.areaUnit)})`;
+    if (m.type === 'circle') return `\u2300 ${formatDim(result.values[0], result.unit)} (${formatArea(result.area, result.areaUnit)})`;
+    if (m.type === 'polygon') return formatArea(result.area, result.areaUnit);
     return '\u2014';
   }
 
@@ -804,7 +923,7 @@
 
   // ---- Toolbar -------------------------------------------
   function setupToolbar() {
-    const tools = ['pan', 'reference', 'persp-ref', 'line', 'rect', 'circle'];
+    const tools = ['pan', 'reference', 'persp-ref', 'line', 'rect', 'circle', 'polygon'];
     for (const t of tools) {
       $(`#tool-${t}`).addEventListener('click', () => setTool(t));
     }
@@ -820,6 +939,7 @@
     drawing = null;
     // Cancel persp-ref placement if switching away
     if (t !== 'persp-ref') perspDrawPoints = [];
+    if (t !== 'polygon') { polyDrawPoints = []; polyCursorWorld = null; }
     $$('.tool-btn').forEach(b => b.classList.remove('active'));
     $(`#tool-${t}`)?.classList.add('active');
     container.classList.remove('pan-cursor', 'crosshair', 'move-cursor');
@@ -934,6 +1054,21 @@
       return;
     }
 
+    // Polygon tool: click to place vertices, click first vertex to close
+    if (activeTool === 'polygon') {
+      if (polyDrawPoints.length >= 3) {
+        const s0 = worldToScreen(polyDrawPoints[0].x, polyDrawPoints[0].y);
+        if (dist(x, y, s0.x, s0.y) < 10) {
+          finishPolygon();
+          return;
+        }
+      }
+      polyDrawPoints.push({ x: w.x, y: w.y });
+      polyCursorWorld = null;
+      renderAll();
+      return;
+    }
+
     // Drawing tools
     if (activeTool === 'reference' || activeTool === 'line' || activeTool === 'rect' || activeTool === 'circle') {
       drawing = { type: activeTool === 'reference' ? 'reference' : activeTool, x1: w.x, y1: w.y, x2: w.x, y2: w.y };
@@ -974,9 +1109,9 @@
       const w = screenToWorld(x, y);
       const m = dragging.meas;
       const i = dragging.endpointIndex;
-      if (m.type === 'persp-ref') {
+      if (m.type === 'persp-ref' || m.type === 'polygon') {
         m.points[i] = { x: w.x, y: w.y };
-        recomputeHomography(m);
+        if (m.type === 'persp-ref') recomputeHomography(m);
       } else {
         if (i === 0) { m.x1 = w.x; m.y1 = w.y; }
         else { m.x2 = w.x; m.y2 = w.y; }
@@ -996,6 +1131,13 @@
       const w = screenToWorld(x, y);
       drawing.x2 = w.x;
       drawing.y2 = w.y;
+      renderAll();
+      return;
+    }
+
+    // Polygon in-progress: track cursor for preview segment
+    if (activeTool === 'polygon' && polyDrawPoints.length > 0) {
+      polyCursorWorld = screenToWorld(x, y);
       renderAll();
       return;
     }
@@ -1083,7 +1225,28 @@
     }
   }
 
+  function finishPolygon() {
+    if (polyDrawPoints.length < 3) return;
+    const layer = activeLayer();
+    if (layer) {
+      pushUndo();
+      const m = { id: uid(), type: 'polygon', points: polyDrawPoints.slice(), displayUnit: null, areaUnit: null };
+      layer.measurements.push(m);
+      selectedMeasId = m.id;
+      saveState();
+      renderMeasurementList();
+    }
+    polyDrawPoints = [];
+    polyCursorWorld = null;
+    renderAll();
+  }
+
   function onDblClick(e) {
+    // Polygon tool: double-click finishes the polygon
+    if (activeTool === 'polygon' && polyDrawPoints.length >= 3) {
+      finishPolygon();
+      return;
+    }
     if (activeTool !== 'pan') return;
     const { x, y } = canvasCoords(e);
     const layer = activeLayer();
@@ -1269,8 +1432,13 @@
       }
       if (e.key === 'Escape') {
         if (perspDrawPoints.length > 0) { perspDrawPoints = []; renderAll(); }
+        if (polyDrawPoints.length > 0) { polyDrawPoints = []; polyCursorWorld = null; renderAll(); }
         if (drawing) { drawing = null; renderAll(); }
         if (selectedMeasId) { selectedMeasId = null; renderMeasurementList(); renderAll(); }
+      }
+      if (e.key === 'Enter' && activeTool === 'polygon' && polyDrawPoints.length >= 3) {
+        e.preventDefault();
+        finishPolygon();
       }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedMeasId) deleteMeasurement(selectedMeasId);
@@ -1282,6 +1450,7 @@
       if (e.key === 'b' || e.key === '4') setTool('rect');
       if (e.key === 'c' || e.key === '5') setTool('circle');
       if (e.key === 'p' || e.key === '6') setTool('persp-ref');
+      if (e.key === 'g' || e.key === '7') setTool('polygon');
       if (e.key === '+' || e.key === '=') zoomBy(1.3);
       if (e.key === '-') zoomBy(1 / 1.3);
       if (e.key === '0') fitView();
@@ -1337,6 +1506,9 @@
 
     // In-progress perspective ref
     if (perspDrawPoints.length > 0) drawPerspProgress(perspDrawPoints);
+
+    // In-progress polygon
+    if (polyDrawPoints.length > 0) drawPolyProgress(polyDrawPoints);
   }
 
   function drawCheckerboard(w, h) {
@@ -1504,10 +1676,186 @@
     ctx.restore();
   }
 
+  // ---- Draw Polygon Measurement --------------------------
+  function drawPolygonShape(m, color, lineWidth, isSelected) {
+    const pts = m.points.map(p => worldToScreen(p.x, p.y));
+    if (pts.length < 3) return;
+
+    ctx.save();
+    // Fill
+    const prevAlpha = ctx.globalAlpha;
+    ctx.globalAlpha = prevAlpha * 0.1;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = prevAlpha;
+
+    // Outline
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.closePath();
+    ctx.stroke();
+
+    if (isSelected) {
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Vertex dots
+    for (const p of pts) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, isSelected ? 4.5 : 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      if (isSelected) {
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawPolygonLabels(m, layer, color, isSelected) {
+    const result = computeMeasurementValues(m, layer);
+    const pts = m.points.map(p => worldToScreen(p.x, p.y));
+    if (pts.length < 3) return;
+
+    ctx.save();
+    if (result) {
+      // Side length labels on every edge
+      for (let i = 0; i < pts.length; i++) {
+        const p1 = pts[i], p2 = pts[(i + 1) % pts.length];
+        drawEdgeLabel(p1, p2, formatDim(result.sides[i], result.unit), color);
+      }
+    }
+
+    // Area label at centroid
+    const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+    const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+    const text = result ? formatArea(result.area, result.areaUnit) : '\u2014 (no ref)';
+    ctx.font = `${isSelected ? 'bold ' : ''}11px ${monoFont()}`;
+    const tw = ctx.measureText(text).width + 12;
+    const th = 18;
+    ctx.fillStyle = 'rgba(22, 33, 62, 0.92)';
+    ctx.beginPath();
+    roundRect(ctx, cx - tw / 2, cy - th / 2, tw, th, 4);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, cx, cy);
+    ctx.restore();
+  }
+
+  function drawPolyProgress(points) {
+    const pts = points.map(p => worldToScreen(p.x, p.y));
+    const color = '#f472b6';
+    const layer = activeLayer();
+
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+
+    // Placed segments
+    if (pts.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+    }
+
+    // Preview segment to cursor + live length
+    if (polyCursorWorld) {
+      const cur = worldToScreen(polyCursorWorld.x, polyCursorWorld.y);
+      const last = pts[pts.length - 1];
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(cur.x, cur.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const tempMeas = {
+        id: 'preview', type: 'polygon', displayUnit: null, areaUnit: null,
+        points: [...points, polyCursorWorld],
+      };
+      const result = layer ? computeMeasurementValues(tempMeas, layer) : null;
+      if (result) {
+        const n = result.sides.length;
+        drawEdgeLabel(last, cur, formatDim(result.sides[n - 1], result.unit), color);
+        if (tempMeas.points.length >= 3) {
+          const ax = tempMeas.points.reduce((s, p) => s + p.x, 0) / tempMeas.points.length;
+          const ay = tempMeas.points.reduce((s, p) => s + p.y, 0) / tempMeas.points.length;
+          const ac = worldToScreen(ax, ay);
+          drawSmallLabel(ac.x, ac.y, formatArea(result.area, result.areaUnit), color);
+        }
+      } else {
+        const px = dist(last.x, last.y, cur.x, cur.y);
+        drawSmallLabel((last.x + cur.x) / 2, (last.y + cur.y) / 2 - 14, `${Math.round(px)} px`, color);
+      }
+    } else {
+      ctx.setLineDash([]);
+    }
+
+    // Vertex dots with numbers
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.fillStyle = 'white';
+      ctx.font = `bold 9px ${monoFont()}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), p.x, p.y);
+    }
+
+    // Hint text near cursor
+    const hintBase = polyCursorWorld ? worldToScreen(polyCursorWorld.x, polyCursorWorld.y) : pts[pts.length - 1];
+    const hintText = pts.length < 3
+      ? `Click vertex ${pts.length + 1} (min 3)`
+      : 'Double-click / Enter to finish';
+    const hx = hintBase.x + 16;
+    const hy = hintBase.y - 16;
+    ctx.font = `11px ${monoFont()}`;
+    ctx.fillStyle = 'rgba(22, 33, 62, 0.9)';
+    const tw = ctx.measureText(hintText).width + 10;
+    ctx.beginPath();
+    roundRect(ctx, hx, hy - 9, tw, 18, 4);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(hintText, hx + 5, hy);
+
+    ctx.restore();
+  }
+
   // ---- Draw Measurement -----------------------------------
   function drawMeasurement(m, layer, isActiveLayer) {
-    const s1 = worldToScreen(m.x1, m.y1);
-    const s2 = worldToScreen(m.x2, m.y2);
+    const isPolygon = m.type === 'polygon';
+    const s1 = isPolygon ? null : worldToScreen(m.x1, m.y1);
+    const s2 = isPolygon ? null : worldToScreen(m.x2, m.y2);
     const isSelected = m.id === selectedMeasId && isActiveLayer;
     const lineWidth = isSelected ? 2.5 : 1.8;
     const hasPerspective = layer.perspRef && layer.perspRef.inverseHomography;
@@ -1538,6 +1886,10 @@
         drawCircleShape(s1, r, color, lineWidth, isSelected);
         drawCircleLabel(s1, r, computeDimensionStr(m, layer), color, isSelected);
       }
+    } else if (m.type === 'polygon') {
+      const color = '#f472b6';
+      drawPolygonShape(m, color, lineWidth, isSelected);
+      drawPolygonLabels(m, layer, color, isSelected);
     }
   }
 
@@ -2005,7 +2357,7 @@
             const sc = corners.map(c => worldToScreen(c.x, c.y));
             const cx = (sc[0].x + sc[1].x + sc[2].x + sc[3].x) / 4;
             const topY = Math.min(sc[0].y, sc[1].y, sc[2].y, sc[3].y);
-            const text = `${formatDim(result.values[0], result.unit)} \u00d7 ${formatDim(result.values[1], result.unit)}`;
+            const text = `${formatDim(result.values[0], result.unit)} \u00d7 ${formatDim(result.values[1], result.unit)} (${formatArea(result.area, result.areaUnit)})`;
             drawSmallLabel(cx, topY - 14, text, '#a78bfa');
           }
         }
@@ -2013,7 +2365,7 @@
         drawRectShape(s1, s2, '#a78bfa', 2, false);
         const result = layer ? computeMeasurementValues(tempMeas, layer) : null;
         if (result) {
-          const text = `${formatDim(result.values[0], result.unit)} \u00d7 ${formatDim(result.values[1], result.unit)}`;
+          const text = `${formatDim(result.values[0], result.unit)} \u00d7 ${formatDim(result.values[1], result.unit)} (${formatArea(result.area, result.areaUnit)})`;
           const cx = (s1.x + s2.x) / 2;
           const top = Math.min(s1.y, s2.y);
           drawSmallLabel(cx, top - 14, text, '#a78bfa');
@@ -2033,7 +2385,7 @@
             for (const p of sc) {
               if (p.y < topY) { topY = p.y; topX = p.x; }
             }
-            drawSmallLabel(topX, topY - 14, `\u2300 ${formatDim(result.values[0], result.unit)}`, '#34d399');
+            drawSmallLabel(topX, topY - 14, `\u2300 ${formatDim(result.values[0], result.unit)} (${formatArea(result.area, result.areaUnit)})`, '#34d399');
           }
         }
       } else {
@@ -2041,7 +2393,7 @@
         drawCircleShape(s1, r, '#34d399', 2, false);
         const result = layer ? computeMeasurementValues(tempMeas, layer) : null;
         if (result) {
-          drawCircleLabel(s1, r, `\u2300 ${formatDim(result.values[0], result.unit)}`, '#34d399', false);
+          drawCircleLabel(s1, r, `\u2300 ${formatDim(result.values[0], result.unit)} (${formatArea(result.area, result.areaUnit)})`, '#34d399', false);
         }
       }
     }
