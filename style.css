@@ -17,6 +17,7 @@
   --persp-color: #fb923c;
   --measure-color: #38bdf8;
   --shape-color: #a78bfa;
+  --polygon-color: #f472b6;
   --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
   --mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
 }
@@ -469,6 +470,7 @@ kbd {
 .measurement-type.line { background: var(--measure-color); }
 .measurement-type.rect { background: var(--shape-color); }
 .measurement-type.circle { background: #34d399; }
+.measurement-type.polygon { background: var(--polygon-color); }
 
 .measurement-label {
   flex: 1;
